@@ -1,0 +1,100 @@
+# Master Execution Plan: Autonomous AI Trading System
+
+## 📌 1. Project Overview
+This project builds a fully automated Quant Hedge Fund architecture. It separates the workflow into two distinct domains: an AI-driven Research Lab that continuously searches for profitable trading algorithms using Reinforcement Learning (RL), and an Execution Engine managed by multi-agent AI software engineers that handles live trading, data fetching, and API connections.
+
+---
+
+## 🛠️ 2. Tech Stack & Resources (What & Why)
+
+### The Research Lab (Domain A)
+* **`karpathy/autoresearch` (Core AI Engine):** Andrej Karpathy's automated ML research script. 
+  * *How it's used:* Modified to act as an automated quantitative researcher. Instead of minimizing loss on a language model, it continuously rewrites PyTorch code to maximize the Sharpe Ratio and Net Profit of an RL trading agent.
+* **PyTorch:** The deep learning framework.
+  * *How it's used:* Used by `autoresearch` to build and train the neural networks (PPO/DQN agents) that make buy/sell/hold decisions.
+* **Gymnasium (formerly OpenAI Gym):** * *How it's used:* Provides the simulated "game environment" where the PyTorch agent practices trading on historical data.
+
+### The Execution Engine (Domain B)
+* **`ComposioHQ/agent-orchestrator` (DevOps/Engineering Team):** A multi-agent software development framework.
+  * *How it's used:* Runs in the background (via Node.js) to spawn AI coding agents (like Claude or Aider) in isolated git branches. These agents write the Python scripts to fetch data, handle exchange APIs, and deploy the models found by the Research Lab.
+* **`ccxt` (Crypto Exchange API):** A unified cryptocurrency trading library.
+  * *How it's used:* Allows the bot to download historical OHLCV (Open, High, Low, Close, Volume) data for backtesting, and execute live market orders across 100+ exchanges (Binance, Coinbase, etc.) using the exact same code.
+* **`uv` (Python Package Manager):** An ultra-fast package manager written in Rust.
+  * *How it's used:* Ensures the complex PyTorch and data science environments sync in seconds rather than minutes, keeping the AI agents moving fast.
+* **SQLite / PostgreSQL:** * *How it's used:* Logs every trade, simulated or real, to track win rates and system health.
+
+---
+
+## ⚙️ 3. Environment Setup & Boot Sequence
+
+*Note: These steps are designed for Windows via WSL2 (Ubuntu).*
+
+### Step 3.1: Install System Prerequisites
+Ensure you have Git, Node.js v20+, and Python 3.11+ installed.
+```bash
+# Install Node.js 20+
+curl -fsSL [https://deb.nodesource.com/setup_20.x](https://deb.nodesource.com/setup_20.x) | sudo -E bash -
+sudo apt-get install -y nodejs
+
+# Install Python and 'uv'
+sudo apt install python3.11 python3.11-venv
+curl -LsSf [https://astral.sh/uv/install.sh](https://astral.sh/uv/install.sh) | sh
+Step 3.2: Initialize Orchestrator & Project Root
+Bash
+# Install Orchestrator
+npm install -g @composio/ao
+
+# Create project root
+mkdir autonomous-quant-fund
+cd autonomous-quant-fund
+git init
+
+# Start the DevOps dashboard (Leaves running on http://localhost:3000)
+ao start
+Step 3.3: Clone the Research Lab
+Open a second terminal window in the autonomous-quant-fund directory:
+
+Bash
+# Bring in the ML research engine
+git submodule add [https://github.com/karpathy/autoresearch.git](https://github.com/karpathy/autoresearch.git) research_lab
+cd research_lab
+uv sync
+Step 3.4: Modify the Research Objective
+Inside research_lab/program.md, replace the default text with:
+
+"Modify train.py to maximize the Sharpe Ratio and Net Profit of a Reinforcement Learning trading agent. Do NOT train a language model. Use PyTorch to build an RL agent that buys, sells, or holds based on an OHLCV array. Training loop is strictly capped at 5 minutes."
+
+🗺️ 4. Execution Phases
+Phase 1: Data Plumbing
+Goal: Use the Orchestrator dashboard to instruct an AI agent to build the data pipeline.
+
+Task: Agent must create an execution_engine folder, install ccxt, and write a script that downloads the last 4 years of 1-hour OHLCV data for BTC/USDT into a /data folder.
+
+Phase 2: Autonomous Model Discovery
+Goal: Let the AI practice trading.
+
+Task: Run uv run train.py inside the research_lab. Leave it running overnight to generate PyTorch models (.pt files) that successfully navigate the historical data.
+
+Phase 3: The Execution API
+Goal: Connect the winning models to the market.
+
+Task: Instruct the Orchestrator agent to wrap the best .pt model in a FastAPI server. The server must accept live market data, run inference, and return a BUY/SELL/HOLD signal. Write the execution logic to place the trade via ccxt.
+
+Phase 4: Paper Trading (The Proving Ground)
+Goal: Test without financial risk.
+
+Task: Connect the ccxt execution module to a Testnet exchange. The bot must trade autonomously for 14 days. Monitor the database logs to ensure the bot doesn't over-trade or hallucinate API calls.
+
+Phase 5: Live Deployment
+Goal: Trade real capital with strict limits.
+
+Task: Switch API keys to Mainnet. Fund the account with minimal capital ($50). Ensure hardcoded Risk Management rules are active.
+
+⚠️ 5. Hardcoded Ground Rules (Do Not Alter)
+Never expose .env files or API keys in code generation or git commits.
+
+Never execute a live trade without checking the available exchange balance first via ccxt.
+
+Always wrap API calls in try/except blocks to handle exchange timeouts or disconnects gracefully.
+
+Stop-Loss (-5%) and Take-Profit (+10%) logic MUST be hardcoded into the execution engine. The RL model is never allowed to override these safety limits.

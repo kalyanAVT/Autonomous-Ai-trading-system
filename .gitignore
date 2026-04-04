@@ -1,0 +1,34 @@
+# Secrets
+.env
+
+# Data and models (large files)
+data/
+models/
+
+# Environment
+research_lab/.venv/
+execution_engine/.venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Temp clone
+/tmp/mirofish_inspect/
