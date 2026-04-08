@@ -142,6 +142,17 @@ class FeatureEngine:
 
         return features, close_prices
 
+    def feature_columns(self) -> list[str]:
+        """Return the ordered list of feature column names (single source of truth).
+
+        Import this from FeatureEngine to avoid hardcoding column order
+        in signal_generator.py or anywhere else.
+        """
+        if not self._feature_cols:
+            # Compute features to populate _feature_cols
+            self.compute_all()
+        return list(self._feature_cols)
+
     @staticmethod
     def _rolling_zscore(df: pd.DataFrame, window: int) -> pd.DataFrame:
         """Z-score normalize each column with an expanding mean/std window."""

@@ -93,6 +93,7 @@ class Position:
         default_factory=lambda: datetime.now(timezone.utc), hash=False
     )
     stop_loss: Optional[float] = None
+    take_profit: Optional[float] = None
 
     def update_price(self, price: float) -> None:
         object.__setattr__(self, "current_price", price)

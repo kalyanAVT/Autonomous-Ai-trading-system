@@ -22,6 +22,8 @@ from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.evaluation import evaluate_policy
 from stable_baselines3.common.callbacks import BaseCallback
 import torch
+import wandb
+from wandb.integration.sb3 import WandbCallback
 
 # Ensure parent is on path for TradingEnv
 _parent = Path(__file__).resolve().parent
@@ -73,27 +75,53 @@ def train(
     print(f"Training for {total_timesteps:,} timesteps...")
 
     vec_env = make_env(data, close_prices)
+    
+    config = {
+        "policy": "MlpPolicy",
+        "learning_rate": 3e-4,
+        "n_steps": 512,
+        "batch_size": 64,
+        "n_epochs": 10,
+        "gamma": 0.99,
+        "gae_lambda": 0.95,
+        "clip_range": 0.2,
+        "ent_coef": 0.01,
+        "total_timesteps": total_timesteps,
+    }
+
+    run = wandb.init(
+        project="quant-fund-rl",
+        config=config,
+        sync_tensorboard=True,
+    )
 
     model = PPO(
-        policy="MlpPolicy",
+        policy=config["policy"],
         env=vec_env,
-        learning_rate=3e-4,
-        n_steps=512,
-        batch_size=64,
-        n_epochs=10,
-        gamma=0.99,
-        gae_lambda=0.95,
-        clip_range=0.2,
-        ent_coef=0.01,
+        learning_rate=config["learning_rate"],
+        n_steps=config["n_steps"],
+        batch_size=config["batch_size"],
+        n_epochs=config["n_epochs"],
+        gamma=config["gamma"],
+        gae_lambda=config["gae_lambda"],
+        clip_range=config["clip_range"],
+        ent_coef=config["ent_coef"],
         verbose=1,
         device=device,
-        tensorboard_log="./ppo_tensorboard/",
+        tensorboard_log=f"./ppo_tensorboard/{run.id}" if run else "./ppo_tensorboard/",
     )
+
+    callbacks = [EpisodeLogger(log_every=5000)]
+    if run:
+        callbacks.append(WandbCallback(gradient_save_freq=100, model_save_path=f"models/{run.id}", verbose=2))
 
     model.learn(
         total_timesteps=total_timesteps,
-        callback=EpisodeLogger(log_every=5000),
+        callback=callbacks,
     )
+    
+    if run:
+        run.finish()
 
     return model
 

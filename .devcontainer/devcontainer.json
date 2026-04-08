@@ -1,0 +1,12 @@
+{
+    "name": "quant-fund",
+    "dockerComposeFile": "../docker-compose.yml",
+    "service": "execution_engine",
+    "workspaceFolder": "/workspace",
+    "extensions": [
+        "ms-python.python",
+        "charliermarsh.ruff",
+        "ms-azuretools.vscode-docker"
+    ],
+    "postCreateCommand": "uv sync && pre-commit install"
+}

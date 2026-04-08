@@ -98,17 +98,6 @@ class TradingEnv(gym.Env):
         obs = row.values.astype(np.float32)
         return np.clip(obs, -10.0, 10.0)
 
-    def _apply_slippage(self, price: float) -> float:
-        """Apply random slippage to fill price.
-
-        Slippage always moves the price against the agent:
-        - For buys (entering position): pay more than market price
-        - For sells (liquidating position): receive less than market price
-        """
-        slip = float(np.random.uniform(0, self.slippage_pct))
-        # _apply_slippage always produces a WORSE price for the current trade
-        raise NotImplementedError("Use _apply_slippage_for_buy or _apply_slippage_for_sell")
-
     def _apply_slippage_for_buy(self, price: float) -> float:
         """Slippage on a buy — pay more than market price."""
         slip = float(np.random.uniform(0, self.slippage_pct))
@@ -161,38 +150,60 @@ class TradingEnv(gym.Env):
         action_val = float(np.clip(action[0], -1.0, 1.0))
 
         current_price = float(self.close_prices[self._current_step])
+        new_fill_price = 0.0
 
-        # --- Position Management ---
-        prev_position = self._position
-        prev_value = self._portfolio_value
+        # --- Position Management (incremental adjustment) ---
+        prev_portfolio_value = self._portfolio_value
 
-        # Action controls dollar exposure fraction of balance
+        # Action maps to target dollar exposure as fraction of balance
+        # Positive → long, negative → short (only long supported for now)
         target_dollar_exposure = action_val * self._balance * self.max_position_size
 
-        # Liquidation: close previous position — apply sell slippage
-        if abs(prev_position) > 1e-10:
-            liq_price = self._apply_slippage_for_sell(current_price)
-            liquidation_value = prev_position * liq_price
-            self._balance += liquidation_value
+        if target_dollar_exposure > self._balance * 0.001:
+            # Calculate target units at current price
+            buy_price = self._apply_slippage_for_buy(current_price)
+            target_units = target_dollar_exposure / buy_price if buy_price > 0 else 0.0
 
-            # Apply commission on liquidation
-            liq_cost = abs(liquidation_value) * self.commission_pct
-            self._balance -= liq_cost
+            delta_units = target_units - self._position
 
-        # Enter new position — apply buy slippage
-        self._position = 0.0
-        new_fill_price = self._apply_slippage_for_buy(current_price)
-        if abs(target_dollar_exposure) > self._balance * 0.001 and new_fill_price > 0:
-            units_to_buy = target_dollar_exposure / new_fill_price
-            trade_cost = abs(target_dollar_exposure) * self.commission_pct
-            self._balance -= abs(target_dollar_exposure) + trade_cost
-            self._position = units_to_buy
-            self._entry_price = new_fill_price
+            if abs(delta_units) > 1e-10:
+                if delta_units > 0:
+                    # Increase position — buy delta
+                    cost = abs(delta_units) * buy_price
+                    commission_cost = cost * self.commission_pct
+                    self._balance -= cost + commission_cost
+                    self._position = target_units
+                    self._entry_price = (
+                        (self._position - delta_units) * self._entry_price
+                        + delta_units * buy_price
+                    ) / self._position if self._position > 0 else buy_price
+                else:
+                    # Decrease position — sell delta
+                    sell_price = self._apply_slippage_for_sell(current_price)
+                    revenue = abs(delta_units) * sell_price
+                    commission_cost = revenue * self.commission_pct
+                    self._balance += revenue - commission_cost
+                    self._position = target_units
+        else:
+            # Close position if one exists
+            if abs(self._position) > 1e-10:
+                sell_price = self._apply_slippage_for_sell(current_price)
+                revenue = abs(self._position) * sell_price
+                commission_cost = revenue * self.commission_pct
+                self._balance += revenue - commission_cost
+                self._position = 0.0
+                self._entry_price = 0.0
 
-        # Portfolio valuation: cash only (no position at end of step)
-        self._portfolio_value = self._balance
+        # Update portfolio value = balance + unrealized position value
+        if self._position > 0:
+            unrealized = self._position * current_price
+        else:
+            unrealized = 0.0
+        self._portfolio_value = self._balance + unrealized
+
         step_return = (
-            (self._portfolio_value / prev_value - 1.0) if prev_value > 0 else 0.0
+            (self._portfolio_value / prev_portfolio_value - 1.0)
+            if prev_portfolio_value > 0 else 0.0
         )
 
         # Peak tracking for drawdown

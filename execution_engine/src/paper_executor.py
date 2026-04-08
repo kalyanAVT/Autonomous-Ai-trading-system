@@ -9,6 +9,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from typing import Optional
+
 import numpy as np
 
 from .config import Settings
@@ -22,6 +24,7 @@ from .models import (
 )
 from .risk_manager import RiskManager
 from .signal_generator import Signal
+from .db import TradeDB
 
 logger = logging.getLogger(__name__)
 
@@ -29,13 +32,15 @@ logger = logging.getLogger(__name__)
 class PaperExecutor:
     """Simulated exchange for paper trading."""
 
-    def __init__(self, settings: Settings, risk_manager: RiskManager):
+    def __init__(self, settings: Settings, risk_manager: RiskManager, db: Optional[TradeDB] = None):
         self.settings = settings
         self.risk = risk_manager
+        self.db = db
         self.balance = 0.0
         self.position: Position | None = None
         self.trade_history: list[TradeRecord] = []
         self.order_history: list[Order] = []
+        self._session_id: str = ""
 
     def init(self, initial_balance: float = 10_000.0) -> None:
         """Initialize paper account."""
@@ -59,7 +64,19 @@ class PaperExecutor:
             return None
 
         if self.position is not None:
-            self._close_position(signal.price)
+            # Only close if signal disagrees with current position
+            should_close = (
+                (self.position.side == Side.LONG and not signal.is_long)
+                or (self.position.side == Side.SHORT and not signal.is_short)
+            )
+            if should_close:
+                self._close_position(signal.price)
+                if signal.is_flat:
+                    return None
+            else:
+                # Signal agrees with position — mark to market and skip new trade
+                self.position.update_price(signal.price)
+                return None  # Keep existing position, no action needed
 
         if signal.is_flat:
             return None
@@ -108,13 +125,26 @@ class PaperExecutor:
             filled_at=datetime.now(timezone.utc),
         )
 
+        # Hardcoded stop-loss and take-profit — RL model cannot override
+        stop_loss_price = (
+            price * (1.0 - self.settings.stop_loss_pct)
+            if direction == Side.LONG
+            else price * (1.0 + self.settings.stop_loss_pct)
+        )
+        take_profit_price = (
+            price * (1.0 + self.settings.take_profit_pct)
+            if direction == Side.LONG
+            else price * (1.0 - self.settings.take_profit_pct)
+        )
+
         position = Position(
             symbol=self.settings.symbol,
             side=direction,
             quantity=quantity,
             entry_price=price,
             current_price=price,
-            stop_loss=None,
+            stop_loss=stop_loss_price,
+            take_profit=take_profit_price,
         )
         self.position = position
         self.order_history.append(order)
@@ -128,7 +158,7 @@ class PaperExecutor:
         )
         return order
 
-    def _close_position(self, current_price: float) -> float:
+    def _close_position(self, current_price: float, reason: str = "signal") -> float:
         """Close current position and return realized PnL."""
         if self.position is None:
             return 0.0
@@ -160,13 +190,15 @@ class PaperExecutor:
             entry_time=pos.entry_time,
             exit_time=datetime.now(timezone.utc),
             holding_periods_hours=holding_hours,
-            reason="signal",
+            reason=reason,
         )
 
         self.trade_history.append(trade)
+        stop_loss = pos.stop_loss
         exposure_pct = 0.0
         self.risk.on_trade_closed(pnl, exposure_pct)
         self.risk.update_equity(self.balance)
+        self._log_trade_to_db(trade, stop_loss)
 
         self.position = None
 
@@ -187,10 +219,27 @@ class PaperExecutor:
             logger.info(
                 "Stop loss hit: price=%.2f stop=%.2f", low, self.position.stop_loss
             )
-            self._close_position(self.position.stop_loss)
+            self._close_position(self.position.stop_loss, reason="stop_loss")
             return True
         elif self.position.side == Side.SHORT and high >= self.position.stop_loss:
-            self._close_position(self.position.stop_loss)
+            self._close_position(self.position.stop_loss, reason="stop_loss")
+            return True
+
+        return False
+
+    def check_take_profit(self, low: float, high: float) -> bool:
+        """Check if take profit was triggered by current candle."""
+        if self.position is None or self.position.take_profit is None:
+            return False
+
+        if self.position.side == Side.LONG and high >= self.position.take_profit:
+            logger.info(
+                "Take profit hit: price=%.2f tp=%.2f", high, self.position.take_profit
+            )
+            self._close_position(self.position.take_profit, reason="take_profit")
+            return True
+        elif self.position.side == Side.SHORT and low <= self.position.take_profit:
+            self._close_position(self.position.take_profit, reason="take_profit")
             return True
 
         return False
@@ -237,3 +286,33 @@ class PaperExecutor:
             return price * (1.0 + slip)  # Buy at worse price
         else:
             return price * (1.0 - slip)  # Sell at worse price
+
+    # ── Persistence ──────────────────────────────────────────────
+
+    def set_session_id(self, session_id: str) -> None:
+        """Assign the current execution session for DB logging."""
+        self._session_id = session_id
+
+    def _log_trade_to_db(self, trade: TradeRecord, stop_loss: Optional[float]) -> None:
+        """Persist a completed trade to SQLite."""
+        if not self.db or not self._session_id:
+            return
+        try:
+            self.db.log_trade(
+                session_id=self._session_id,
+                symbol=trade.symbol,
+                side=trade.side.value,
+                entry_price=trade.entry_price,
+                exit_price=trade.exit_price,
+                quantity=trade.quantity,
+                pnl=trade.pnl,
+                commission=trade.commission,
+                stop_loss=stop_loss,
+                take_profit=None,
+                reason=trade.reason,
+                entry_time=trade.entry_time,
+                exit_time=trade.exit_time,
+                holding_hours=trade.holding_periods_hours,
+            )
+        except Exception as e:
+            logger.error("Failed to log trade to DB: %s", e)

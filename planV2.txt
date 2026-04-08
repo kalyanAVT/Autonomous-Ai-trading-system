@@ -1,0 +1,572 @@
+================================================================================
+AUTONOMOUS AI TRADING SYSTEM — MASTER EXECUTION PLAN v3.0
+Single source of truth for Claude Code. Supersedes all previous plan files.
+Last updated: April 2026
+================================================================================
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 1 — PROJECT OVERVIEW
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Two-domain architecture. Research Lab finds strategy. Execution Engine deploys it.
+
+DOMAIN A — Research Lab (The Brain)
+  - Runs autoresearch (karpathy) modified to maximize Sharpe Ratio instead of LM loss
+  - PyTorch PPO/DQN agent trained in a custom Gymnasium env on OHLCV + LOB data
+  - Outputs: best_model.pt, backtest_results.json, features.parquet, labels.npy
+  - Tracked with W&B (Weights & Biases) — NOT console logs
+  - Data versioned with DVC — NOT raw git
+
+DOMAIN B — Execution Engine (The Body)
+  - ComposioHQ/agent-orchestrator (Node.js): spawns Claude/Aider agents in isolated
+    git branches. Agents write, test, lint, and PR code. Never commit directly to main.
+  - ccxt.pro: live WebSocket streaming + order execution across CEX/DEX
+  - FastAPI: wraps best_model.pt as inference endpoint (BUY/SELL/HOLD + confidence)
+  - MiroFish: local news/policy simulation engine, feeds macro signal to strategy layer
+  - SQLite (MVP) → PostgreSQL + TimescaleDB (scale)
+  - Docker + Dev Containers: identical env from WSL2 dev to Colab training to prod
+
+INTEGRATION LAYER
+  - Research Lab produces .pt files → Execution Engine consumes via FastAPI
+  - Domains are decoupled at runtime. No shared process. No shared memory.
+  - CI/CD: when autoresearch finds new best model, GitHub Actions pushes to FastAPI server
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 2 — CURRENT STATUS (April 2026)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Currently in: Phase 2 — Execution Engine / Paper Trading
+
+ITEM                              STATUS        NOTES
+--------------------------------  ------------  ---------------------------------
+Data download (BTC/USDT 1h)       DONE          34,955 candles, ~4.3yr to 2026-02-09
+Feature engineering (12 cols)     DONE          features.parquet + labels.npy
+trading_env.py (Gymnasium)        DONE          direction-aware slippage fixed
+paper_executor.py                 DONE          balance guard added, dead import removed
+run_backtest.py                   DONE          sys.path fixed, dead imports removed
+risk_manager.py                   DONE          needs threshold tuning post paper-trade
+signal_generator.py               DONE          FEATURE_COLUMNS match feature_engine exactly
+data_feed.py async fix            IN PROGRESS   BUG OPEN: ccxt sync blocks event loop
+W&B experiment tracking           NOT STARTED   required before next cloud training run
+DVC setup                         NOT STARTED   required before pushing new data/models
+Dev Container (.devcontainer/)    NOT STARTED   required for env parity
+pre-commit hooks (Ruff + Black)   NOT STARTED   required before agent PRs go live
+Binance Vision data download      NOT STARTED   replaces slow ccxt historical pulls
+LOB data integration              NOT STARTED   LOBSTER or Tardis.dev
+PPO model training (cloud)        IN PROGRESS   needs Google Colab or RunPod
+.env MODEL_PATH configured        PENDING       waiting for trained .pt file
+Paper trading 14-day run          PENDING       target: Sharpe >1.5, daily DD <3%
+Live deployment                   PENDING       Phase 5 — do NOT start early
+
+OPEN BUGS (must fix before paper trading):
+  [HIGH] data_feed.py L130: exchange.fetch_ohlcv() is sync inside async method.
+         Blocks entire event loop during HTTP. Fix: asyncio.to_thread() wrapper.
+         Same issue at fetch_history() L52.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 3 — FILE & FOLDER STRUCTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+autonomous-quant-fund/
+├── .devcontainer/
+│   └── devcontainer.json          # VS Code Dev Container config (NEW — see Sec 5.5)
+├── .github/
+│   └── workflows/
+│       └── deploy_model.yml       # CI: push new best_model.pt to FastAPI server
+├── .pre-commit-config.yaml        # Ruff + Black hooks (NEW — see Sec 5.6)
+├── .dvc/                          # DVC metadata (NEW — see Sec 5.7)
+├── .env                           # API keys — NEVER committed
+├── .env.example                   # Template — committed
+├── docker-compose.yml             # All services
+├── plan.txt                       # THIS FILE — master reference
+│
+├── data/
+│   ├── btc_1h.parquet             # Raw OHLCV
+│   ├── eth_1h.parquet
+│   ├── sol_1h.parquet
+│   ├── features.parquet           # Engineered feature matrix (12 cols)
+│   ├── labels.npy                 # Target labels for supervised pretraining
+│   ├── lob_btc/                   # Limit Order Book snapshots (NEW)
+│   ├── best_model.pt              # Winning PPO weights
+│   └── backtest_results.json      # Latest backtest metrics
+│
+├── research_lab/                  # Domain A (Python, isolated venv via uv)
+│   ├── src/
+│   │   ├── trading_env.py         # Gymnasium custom env (BUY/SELL/HOLD)
+│   │   ├── feature_engine.py      # Computes 12 indicator features
+│   │   ├── data_preprocessor.py   # Saves features.parquet + labels.npy
+│   │   ├── train_quick.py         # PPO training loop (5 min cap)
+│   │   └── wandb_callbacks.py     # W&B logging hooks (NEW)
+│   ├── pyproject.toml
+│   └── program.md                 # autoresearch objective (maximize Sharpe)
+│
+├── execution_engine/              # Domain B (Python async + Node.js)
+│   ├── src/
+│   │   ├── main.py                # Async entry point + signal handlers
+│   │   ├── data_feed.py           # WebSocket stream + FeatureEngine bridge [BUG OPEN]
+│   │   ├── signal_generator.py    # Loads .pt, runs inference → Signal
+│   │   ├── risk_manager.py        # Pre/post trade checks, drawdown limits
+│   │   ├── paper_executor.py      # Simulated order book (balance guard fixed)
+│   │   ├── live_executor.py       # Real order execution via ccxt.pro
+│   │   ├── inference_api.py       # FastAPI server wrapping best_model.pt
+│   │   ├── backtester.py          # Parquet-based offline backtest
+│   │   ├── run_backtest.py        # CLI entry for backtesting
+│   │   ├── config.py              # Settings via pydantic (.env)
+│   │   └── models.py              # Shared dataclasses: MarketSnapshot, Side, etc.
+│   └── pyproject.toml
+│
+├── mirofish/                      # MiroFish submodule (news/policy signal engine)
+│   └── ...                        # Runs at localhost:3000 (frontend), :5001 (API)
+│
+└── dashboard/
+    └── index.html                 # Real-time trading dashboard (Chart.js, WebSocket)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 4 — TECH STACK
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+DOMAIN A — RESEARCH LAB
+  Python 3.11          Core. Do NOT use 3.12+ (autoresearch deps)
+  PyTorch              Neural nets. PPO via stable-baselines3 or custom
+  Gymnasium            Custom trading env wrapping parquet data
+  autoresearch         Automated ML loop — rewrites train.py to maximize Sharpe
+  pandas + pandas-ta   OHLCV processing + 12 technical indicators
+  numpy                Feature matrix ops
+  uv                   Package manager (Rust-based, fast)
+  Weights & Biases     Experiment tracking — reward curves, entropy, episode length
+  DVC                  Data/model version control — tracks features.parquet + .pt files
+  CCXT (historical)    Initial data download only (switch to Binance Vision for bulk)
+
+DOMAIN B — EXECUTION ENGINE
+  Python 3.11 async    Core language
+  ccxt.pro             WebSocket live streaming + order execution
+  FastAPI              Inference server wrapping .pt model
+  agent-orchestrator   Node.js multi-agent DevOps — spawns Claude/Aider agents
+  SQLite → PostgreSQL  Trade logging
+  TimescaleDB ext      Tick-level time-series queries at scale
+  Docker + DevContainer Containerized, reproducible environment
+  pre-commit + Ruff    Linting/formatting enforced on all commits (human + AI)
+  Black                Code formatting
+  MiroFish             Local news/policy simulation → macro signal
+
+DATA INFRA (NEW ADDITIONS)
+  Binance Vision       Raw tick data archives (data.binance.vision) — free, fast
+  LOBSTER              Academic LOB dataset (academic license required)
+  Tardis.dev           Open-source LOB snapshots and tick data
+  Kaggle G-Research    14 crypto assets, clean ML-ready features + return targets
+  Pushshift / Reddit   Historical r/CryptoCurrency + r/wallstreetbets for MiroFish
+  Fear & Greed API     Daily sentiment score (alternative.me/crypto/fear-and-greed-index/api)
+  Glassnode            On-chain BTC metrics: NVT, SOPR, exchange flows ($29/mo starter)
+  Alpha Vantage        Forex + equity macro context (free tier 60 calls/min)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 5 — ENVIRONMENT SETUP (Windows / WSL2 Ubuntu)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+5.1 SYSTEM PREREQUISITES
+  - WSL2 with Ubuntu 22.04 LTS
+  - Git, Node.js v20+, Python 3.11
+  - Docker Desktop (running before any docker commands)
+  - uv: curl -LsSf https://astral.sh/uv/install.sh | sh
+  NOTE: Run ALL commands in WSL2, NOT Windows PowerShell.
+
+5.2 PROJECT BOOTSTRAP
+  mkdir autonomous-quant-fund && cd autonomous-quant-fund
+  git init
+  git submodule add https://github.com/karpathy/autoresearch.git research_lab
+  npm install -g @composio/ao
+  ao start   # orchestrator dashboard at http://localhost:3000
+
+5.3 PYTHON ENVIRONMENTS
+  Each domain has its own isolated venv to prevent dependency conflicts.
+  Research Lab:      cd research_lab && uv sync
+  Execution Engine:  cd execution_engine && uv sync
+  MiroFish:          cd mirofish && npm run setup:all && npm run dev
+
+5.4 REQUIRED .env VARIABLES
+  EXCHANGE_API_KEY      Binance API key (testnet for paper trading, mainnet for live)
+  EXCHANGE_SECRET       Binance secret — never commit
+  MODEL_PATH            Path to trained .pt file (e.g. data/best_model.pt)
+  SYMBOLS               Trading pairs (e.g. BTC/USDT,ETH/USDT,SOL/USDT)
+  PAPER_TRADING         true for paper, false for live. DEFAULT: true
+  MAX_POSITION_PCT      Max capital per trade as fraction (e.g. 0.02 = 2%)
+  STOP_LOSS_PCT         Hard stop-loss (0.05 = 5%) — NEVER overridden by model
+  TAKE_PROFIT_PCT       Hard take-profit (0.10 = 10%) — NEVER overridden by model
+  LLM_API_KEY           Anthropic or OpenAI key for agent-orchestrator + MiroFish
+  ZEP_API_KEY           Zep Cloud free tier for MiroFish agent memory
+  DB_PATH               SQLite: data/trades.db or PostgreSQL DSN
+  WANDB_API_KEY         Weights & Biases API key for experiment tracking
+  DASHBOARD_TOKEN       Simple bearer token to protect dashboard endpoint
+  DVC_REMOTE_URL        S3/GCS/local path for DVC remote storage
+
+5.5 DEV CONTAINER SETUP (NEW — REQUIRED)
+  Create .devcontainer/devcontainer.json:
+  {
+    "name": "quant-fund",
+    "dockerComposeFile": "../docker-compose.yml",
+    "service": "execution_engine",
+    "workspaceFolder": "/workspace",
+    "extensions": ["ms-python.python", "charliermarsh.ruff", "ms-azuretools.vscode-docker"],
+    "postCreateCommand": "uv sync"
+  }
+  PURPOSE: Ensures VSCode, Colab uploads, and agent-orchestrator ALL use
+  identical Python 3.11 + dependency versions. Eliminates "works on my machine."
+
+5.6 PRE-COMMIT HOOKS (NEW — REQUIRED)
+  Install: pip install pre-commit --break-system-packages && pre-commit install
+  Create .pre-commit-config.yaml:
+  repos:
+    - repo: https://github.com/astral-sh/ruff-pre-commit
+      rev: v0.4.4
+      hooks:
+        - id: ruff
+          args: [--fix]
+        - id: ruff-format
+    - repo: https://github.com/psf/black
+      rev: 24.4.2
+      hooks:
+        - id: black
+  PURPOSE: All code — human-written OR agent-generated — must pass Ruff + Black
+  before any commit is accepted. Enforces identical style standards across all agents.
+
+5.7 DVC SETUP (NEW — REQUIRED)
+  pip install dvc dvc-s3 --break-system-packages
+  cd autonomous-quant-fund && dvc init
+  dvc remote add -d myremote s3://your-bucket/dvc  # or use local path for MVP
+  dvc add data/features.parquet data/labels.npy data/best_model.pt
+  git add data/.gitignore data/*.dvc .dvc/config && git commit -m "init DVC tracking"
+  PURPOSE: Git is bad at binary files. DVC tracks large files (parquet, .npy, .pt)
+  like git tracks code. Allows instant rollback to exact dataset + model combo
+  that produced any given backtest result.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 6 — EXECUTION PHASES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+──────────────────────────────────────────────────────────────────────────────
+PHASE 1 — DATA & RESEARCH LAB  [STATUS: COMPLETE]
+──────────────────────────────────────────────────────────────────────────────
+Do not re-run unless refreshing data or retraining from scratch.
+
+  [x] Download 4+ yr BTC/USDT 1h OHLCV via ccxt → data/btc_1h.parquet
+  [x] Feature engine: 12 indicator columns → features.parquet + labels.npy
+  [x] Custom Gymnasium env (trading_env.py) wraps parquet for RL training
+  [x] autoresearch modified to maximize Sharpe Ratio (not LM loss)
+  [x] Bugs fixed: direction-aware slippage, balance guard, sys.path, dead imports
+
+──────────────────────────────────────────────────────────────────────────────
+PHASE 1.5 — INFRASTRUCTURE HARDENING  [STATUS: NOT STARTED — DO BEFORE PHASE 2]
+──────────────────────────────────────────────────────────────────────────────
+These were identified as critical gaps. Must complete before cloud training.
+
+  [ ] Fix data_feed.py async bug
+        WHAT: exchange.fetch_ohlcv() and fetch_history() are synchronous inside
+              async methods. Blocks entire event loop during HTTP requests.
+        FIX:  import asyncio
+              raw = await asyncio.to_thread(self.exchange.fetch_ohlcv, ...)
+
+  [ ] Set up W&B experiment tracking
+        WHAT: Integrate wandb into research_lab/src/train_quick.py
+        HOW:  pip install wandb (add to pyproject.toml)
+              import wandb
+              wandb.init(project="quant-fund-rl", config={"lr":..., "gamma":...})
+              # In training loop:
+              wandb.log({"reward": episode_reward, "sharpe": sharpe, "entropy": entropy})
+        WHY:  Console logs are useless across 20+ cloud runs. W&B stores every
+              reward curve, policy entropy, and hyperparameter configuration.
+              You will not know why a run failed without this.
+
+  [ ] Set up DVC (see Section 5.7)
+  [ ] Set up Dev Container (see Section 5.5)
+  [ ] Set up pre-commit hooks (see Section 5.6)
+
+  [ ] Download Binance Vision bulk data (replaces slow ccxt historical pulls)
+        URL:  data.binance.vision
+        PATH: data.binance.vision/data/spot/monthly/klines/BTCUSDT/1h/
+        HOW:  wget https://data.binance.vision/data/spot/monthly/klines/BTCUSDT/1h/BTCUSDT-1h-2024-01.zip
+              # Loop for all months and symbols needed
+        WHY:  ccxt historical is rate-limited and slow for bulk downloads.
+              Binance Vision provides pre-packaged zip archives. Free. No API key needed.
+        SYMBOLS TO DOWNLOAD: BTCUSDT, ETHUSDT, SOLUSDT, BNBUSDT
+        TIMEFRAMES TO DOWNLOAD: 1h (primary), 1d (macro regime), 15m (optional)
+
+  [ ] Download LOB (Limit Order Book) data
+        OPTION A — Tardis.dev (easier, free tier available):
+          pip install tardis-dev
+          # See tardis.dev/docs for Python client
+          # Download binance_futures order book snapshots
+        OPTION B — LOBSTER (academic, highest quality):
+          Request access at lobsterdata.com (requires academic email)
+          Provides full Level-2 order book for NASDAQ stocks
+          Note: crypto LOB data not available — use Tardis for crypto LOB
+        WHY:  RL agents trained only on OHLCV learn to exploit "invisible liquidity."
+              They assume they can trade massive size at the exact close price.
+              LOB data lets the Gymnasium env simulate realistic slippage based
+              on actual order book depth. Strategies that are profitable in
+              OHLCV backtest but fail live are almost always a slippage problem.
+        INTEGRATION: Update trading_env.py to accept order_book_depth as
+              observation. Add slippage_model() that reads from LOB snapshots
+              instead of using fixed percentage slippage.
+
+  [ ] Download G-Research Kaggle dataset
+        URL:  kaggle.com/competitions/g-research-crypto-forecasting
+        HOW:  kaggle competitions download -c g-research-crypto-forecasting
+        CONTENTS: 14 crypto assets, years of data, pre-engineered ML features,
+              target variables that account for overlapping returns
+        USE:  Use as additional training data + as benchmark for feature quality.
+              Compare your feature_engine.py output quality against their targets.
+
+──────────────────────────────────────────────────────────────────────────────
+PHASE 2 — MODEL TRAINING (CLOUD GPU)  [STATUS: IN PROGRESS]
+──────────────────────────────────────────────────────────────────────────────
+NOTE: Local CPU training is too slow for PPO. Use cloud GPU.
+OPTIONS: Google Colab (free T4) or RunPod ($0.20/hr A4000).
+
+  [ ] Complete Phase 1.5 infrastructure before training
+  [ ] Upload research_lab/ + data/ to Colab or RunPod
+  [ ] Verify W&B init is in train_quick.py before running
+  [ ] Run: uv run python src/train_quick.py (5 min cap per run)
+  [ ] Let autoresearch iterate 20+ runs overnight
+  [ ] Monitor W&B dashboard — look for:
+        - Reward curve trending upward (not flat or oscillating)
+        - Policy entropy decreasing (agent is converging to a strategy)
+        - Episode length stabilizing (agent learns when to hold vs trade)
+  [ ] Download best_model.pt → local data/ folder
+  [ ] dvc add data/best_model.pt && git commit (version the winning model)
+  [ ] Update .env: MODEL_PATH=data/best_model.pt
+  [ ] Validate: python src/run_backtest.py --model data/best_model.pt
+  [ ] ACCEPT if: Sharpe > 1.5, max drawdown < 15%, win rate > 50%
+  [ ] REJECT if: agent only learned HOLD (entropy too low), or fits only bull market
+
+──────────────────────────────────────────────────────────────────────────────
+PHASE 3 — EXECUTION ENGINE  [STATUS: PARTIAL]
+──────────────────────────────────────────────────────────────────────────────
+
+  [ ] Fix async data_feed.py bug (MUST be done first)
+  [ ] Build inference_api.py — FastAPI server wrapping best_model.pt:
+        POST /predict   body: {"features": [...12 floats...]}
+        response: {"action": "BUY"|"SELL"|"HOLD", "confidence": 0.87}
+  [ ] Connect ccxt.pro testnet credentials in .env
+  [ ] End-to-end integration test:
+        main.py → data_feed → signal_generator → risk_manager → paper_executor
+        Verify no event loop blocking. Verify balance guard fires correctly.
+  [ ] Verify hardcoded safety limits are active in risk_manager.py:
+        stop_loss = 0.05 (5%)
+        take_profit = 0.10 (10%)
+        max_position_pct = 0.02 (2%)
+        max_daily_drawdown = 0.03 (3%)
+        max_consecutive_losses = 5
+
+──────────────────────────────────────────────────────────────────────────────
+PHASE 4 — PAPER TRADING 14-DAY QUARANTINE  [STATUS: PENDING]
+──────────────────────────────────────────────────────────────────────────────
+WARNING: Do NOT skip this phase. A paper trading failure is free. A live failure is not.
+
+  [ ] Set PAPER_TRADING=true in .env
+  [ ] Run for 14 consecutive days on Binance Testnet
+  [ ] Open dashboard/index.html daily — check:
+        - Daily drawdown staying below 3%
+        - No consecutive loss streaks > 3
+        - No API error loops (check System Health panel)
+        - Win rate above 45%
+        - MiroFish signals coherent with market direction
+  [ ] PASS CRITERIA: Sharpe > 1.5 annualized, daily DD < 3%, zero crash loops
+  [ ] Tune risk_manager.py thresholds based on observed behavior
+  [ ] Log issues to CHECKLIST.md. Fix using agent-orchestrator (isolated branches)
+
+──────────────────────────────────────────────────────────────────────────────
+PHASE 5 — LIVE DEPLOYMENT  [STATUS: PENDING]
+──────────────────────────────────────────────────────────────────────────────
+HARD REQUIREMENT: Phase 4 must have completed without failures.
+
+  [ ] Change EXCHANGE_API_KEY + EXCHANGE_SECRET from Testnet to Mainnet in .env
+  [ ] Set PAPER_TRADING=false
+  [ ] Fund exchange account with $50-100 MAXIMUM
+  [ ] Monitor first 48 hours continuously via dashboard
+  [ ] autoresearch continues retraining weekly on new data in background
+  [ ] agent-orchestrator handles code fixes autonomously via PRs
+  [ ] After 30 days profitable: consider scaling capital (still max 2% per trade)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 7 — DATA SOURCING STRATEGY
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHY OHLCV-ONLY IS A TRAP FOR RL
+  OHLCV data assumes the agent executes at the exact close price with perfect
+  liquidity. Real markets have spread, slippage, and depth constraints. An RL
+  agent trained on OHLCV alone will learn strategies that are profitable in
+  simulation but fail in live execution — especially for larger position sizes.
+  The fix is LOB data in the Gymnasium env's slippage model.
+
+DATA EXPANSION ORDER (priority / effort ratio):
+  1. Binance Vision bulk download (30 min, free, massive improvement)
+  2. ETH/USDT + SOL/USDT same timeframes (same script, 30 min)
+  3. 1d candles stacked with 1h (macro regime detection, 1 hr work)
+  4. G-Research Kaggle dataset (1 hr download + integration)
+  5. Fear & Greed Index daily feature (20 min, free API)
+  6. Tardis.dev LOB data (half day, critical for realistic slippage)
+  7. Glassnode NVT + SOPR (strongest BTC leading indicators, $29/mo)
+  8. Reddit/Pushshift historical sentiment (1-2 days, MiroFish training)
+
+DETAILED SOURCE TABLE:
+
+SOURCE              TYPE              COST        NOTES
+------------------  ----------------  ----------  --------------------------------
+Binance Vision      Tick / OHLCV      Free        data.binance.vision — bulk zips,
+                                                  no API key, full history 2017+
+                                                  REPLACES slow ccxt bulk pulls
+Tardis.dev          LOB snapshots     Free tier   crypto order book depth snapshots
+                                                  Python client: pip install tardis-dev
+LOBSTER             LOB (academic)    Free/acad   Academic LOB standard, NASDAQ stocks
+                                                  Useful for equity pair if expanding
+G-Research Kaggle   14 crypto assets  Free        kaggle competitions download
+                                                  ML-ready, handles overlapping returns
+Fear & Greed API    Sentiment score   Free        alternative.me API, daily index 0-100
+                                                  Add as daily feature to feature_engine
+Glassnode           On-chain BTC      $29/mo      NVT, SOPR, exchange inflows — best
+                                                  leading indicators for BTC tops/bottoms
+CryptoQuant         Exchange flows    Free+paid   Exchange reserve, miner outflows,
+                                                  funding rates. Free has 1-day delay.
+Santiment           Social + chain    Free+paid   Social volume, dev activity, whale moves
+                                                  NLP sentiment for MiroFish seeds
+Alpha Vantage       Forex + equities  Free tier   EUR/USD, USD/JPY macro context
+                                                  60 API calls/min free tier
+Pushshift / Reddit  Social sentiment  Free        r/CryptoCurrency + r/wallstreetbets
+                                                  Historical discussion volume = retail
+                                                  sentiment edge. Stronger than news.
+Yahoo Finance       Equities / ETFs   Free        NASDAQ, S&P500, gold, oil correlations
+                                                  Regime detection: is it a risk-on day?
+
+FEATURE EXPANSION (what to add to feature_engine.py):
+  Current 12 features: log_ret_1/3/12/24, roll_vol_12/24, roll_mean_12/24,
+                       momentum_14, vol_change_12, hl_spread, price_pos_24
+
+  Add in this order:
+  - fear_greed_score     (1 feature, free, daily)
+  - btc_1d_trend         (1 feature: 1d MA relative to price — regime filter)
+  - lob_bid_ask_spread   (1 feature from LOB — real slippage proxy)
+  - lob_depth_imbalance  (1 feature: bid depth / ask depth at top 5 levels)
+  - nvt_ratio            (1 feature from Glassnode — on-chain valuation)
+  - sopr                 (1 feature from Glassnode — on-chain realized P&L)
+  - reddit_volume_zscore (1 feature from Pushshift — retail attention)
+
+MIROFISH SEED AUTOMATION:
+  Automate these text feeds into MiroFish via its POST /api/seed endpoint:
+  - Federal Reserve press releases: federalreserve.gov/feeds/press_all.xml (RSS)
+  - SEC EDGAR 8-K filings: efts.sec.gov/LATEST/search-index?q=...&dateRange=custom
+  - CoinDesk RSS: coindesk.com/arc/outboundfeeds/rss/
+  - Reddit r/CryptoCurrency via Pushshift: api.pushshift.io
+  Parse MiroFish prediction report → extract signal (BULLISH/BEARISH) + confidence
+  → inject into signal_generator.py as an extra weighted feature
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 8 — DASHBOARD ARCHITECTURE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+FILE: dashboard/index.html (already created — single HTML file, no build step)
+
+BACKEND REQUIREMENT: FastAPI with /ws WebSocket endpoint broadcasting JSON state
+every 1 second. dashboard/index.html connects to ws://localhost:8080/ws on load.
+
+REQUIRED PANELS (all present in index.html):
+  1. Live P&L — current session $ and %, starting/current/peak balance, drawdown
+  2. Open Positions — entry, current, unrealized P&L, stop, target, duration
+  3. Trade History — filterable by symbol + win/loss, full log from SQLite
+  4. Performance Metrics — Sharpe, win rate, profit factor, avg duration
+  5. Equity Curve — Chart.js, switchable to Drawdown view or Per-Trade P&L
+  6. Risk Monitor — live status dots for drawdown / consecutive losses / exposure
+  7. System Health — uptime, feed latency, API errors, loop latency, DB count
+  8. Recent Signals — last 20 signals with confidence, RSI, MACD snapshot
+  9. MiroFish Feed — news seeds + bullish/bearish signal + confidence score
+
+WEBSOCKET STATE SCHEMA (JSON broadcast every 1s):
+  {
+    "balance": 10234.50,
+    "pnl": 234.50,
+    "pnl_pct": 2.34,
+    "open_positions": [...],
+    "recent_trades": [...],
+    "recent_signals": [...],
+    "risk": { "daily_dd": 0.8, "consecutive_losses": 1, "exposure_pct": 4.2 },
+    "system": { "uptime_s": 3600, "feed_age_s": 1.2, "api_errors": 0, "loop_ms": 12 },
+    "mirofish": [{ "headline": "...", "signal": "bull", "confidence": 0.79 }]
+  }
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 9 — BUG REGISTER
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+All 15 files across research_lab and execution_engine reviewed 2026-04-05.
+
+FILE                    SEV     STATUS  DESCRIPTION
+----------------------  ------  ------  -----------------------------------------
+trading_env.py          HIGH    FIXED   Slippage biased short-favorable. Fixed:
+                                        direction-aware (mirrors paper_executor.py)
+paper_executor.py       HIGH    FIXED   No balance guard. Fixed: check before
+                                        deducting exposure + commission
+paper_executor.py       LOW     FIXED   Dead TradingEnv import + sys.path hack.
+                                        Removed.
+run_backtest.py         HIGH    FIXED   sys.path → wrong dir, all imports crashed.
+                                        Fixed: inserts execution_engine/ root.
+data_feed.py            MEDIUM  OPEN    fetch_ohlcv() sync inside async. Blocks
+                                        event loop. Fix: asyncio.to_thread()
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 10 — ABSOLUTE GROUND RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+These apply to ALL agents (Claude Code, agent-orchestrator, autoresearch).
+Cannot be overridden by model outputs, user prompts, or agent decisions.
+
+  [R1] NEVER expose .env files, API keys, or secrets in code or git commits.
+       Always read from environment variables. .env is in .gitignore always.
+
+  [R2] NEVER execute a live trade without first checking available exchange
+       balance via ccxt. Balance guard must exist in live_executor.py as it
+       does in paper_executor.py.
+
+  [R3] ALWAYS wrap exchange API calls in try/except. Handle rate limits (HTTP 429)
+       with exponential backoff. Do not crash-loop on transient errors.
+
+  [R4] STOP-LOSS (-5%) and TAKE-PROFIT (+10%) are hardcoded in risk_manager.py.
+       The RL model signal is REJECTED if these limits would be breached.
+       The model NEVER overrides them. Ever.
+
+  [R5] NEVER deploy to mainnet before 14 consecutive days of paper trading pass
+       without failures. No exceptions. No shortcuts.
+
+  [R6] NEVER use more than $100 real capital in Phase 5 initial deployment.
+       Scale only after 30+ days profitable live trading with full audit trail.
+
+  [R7] ALL code changes go through agent-orchestrator in isolated git branches.
+       PR review required before merge to main. pre-commit hooks must pass.
+
+  [R8] ALWAYS run DVC add + git commit after generating new features.parquet
+       or training a new best_model.pt. Never let data and model versions drift.
+
+  [R9] ALWAYS log experiment hyperparameters and metrics to W&B before any
+       cloud training run. "Let me try this" is not a debugging strategy at scale.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SECTION 11 — IMMEDIATE NEXT ACTIONS (priority order)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  1.  [NOW]   Fix data_feed.py async bug (asyncio.to_thread wrapper)
+  2.  [NOW]   Integrate W&B into train_quick.py before any cloud run
+  3.  [NOW]   Set up DVC — track features.parquet, labels.npy, best_model.pt
+  4.  [NOW]   Set up pre-commit (Ruff + Black)
+  5.  [NOW]   Create .devcontainer/devcontainer.json
+  6.  [NEXT]  Download Binance Vision bulk zips for BTC/ETH/SOL (1h + 1d)
+  7.  [NEXT]  Add 1d candle stack to feature_engine.py (macro regime context)
+  8.  [NEXT]  Add Fear & Greed Index as daily feature (20 min, free)
+  9.  [NEXT]  Upload to Colab/RunPod. Run 20+ autoresearch iterations overnight.
+              Monitor W&B dashboard. Download best_model.pt when Sharpe > 1.5.
+  10. [NEXT]  dvc add best_model.pt. Run run_backtest.py to validate.
+  11. [THEN]  Start paper trading. Monitor dashboard for 14 days.
+  12. [THEN]  Integrate Tardis.dev LOB data. Update trading_env.py slippage model.
+  13. [THEN]  Add Glassnode NVT + SOPR features.
+  14. [LAST]  Live deployment with $50-100 after paper trading passes.
+
+================================================================================
+END OF PLAN v2.0
+================================================================================
