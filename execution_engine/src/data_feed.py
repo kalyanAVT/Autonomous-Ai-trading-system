@@ -6,6 +6,7 @@ pipeline as research_lab to ensure train/serve parity.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import sys
 from datetime import datetime, timezone
@@ -49,7 +50,8 @@ class DataFeed:
         logger.info("Fetching %d historical candles for %s", count, self.settings.symbol)
 
         try:
-            raw = self.exchange.fetch_ohlcv(
+            raw = await asyncio.to_thread(
+                self.exchange.fetch_ohlcv,
                 self.settings.symbol,
                 self.settings.timeframe,
                 limit=count,
@@ -115,6 +117,18 @@ class DataFeed:
             features=feature_dict,
         )
 
+    def compute_features_for_api(self, features: dict[str, float], price: float) -> MarketSnapshot:
+        """Accept pre-computed features (e.g. from external caller) and return a snapshot.
+
+        Used by the FastAPI server when features are supplied via POST /v1/signal.
+        """
+        return MarketSnapshot(
+            timestamp=datetime.now(timezone.utc),
+            symbol=self.settings.symbol,
+            close=price,
+            features=features,
+        )
+
     async def refresh(
         self,
         snapshot: Optional[MarketSnapshot],
@@ -127,7 +141,8 @@ class DataFeed:
         """
         count = max(n_candles, 50)
         try:
-            raw = self.exchange.fetch_ohlcv(
+            raw = await asyncio.to_thread(
+                self.exchange.fetch_ohlcv,
                 self.settings.symbol,
                 self.settings.timeframe,
                 limit=count,
